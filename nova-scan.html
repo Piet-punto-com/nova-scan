@@ -31,10 +31,11 @@
   .btn-cam.active{background:#DC2626;color:#fff}
   .progress{height:4px;border-radius:2px;background:#eee;overflow:hidden;margin:10px 0}
   .progress-fill{height:100%;width:0%;background:#6C63FF;border-radius:2px;transition:width 0.3s}
-  .msg{font-size:13px;padding:10px 12px;border-radius:8px;margin:8px 0}
+  .msg{font-size:13px;padding:10px 12px;border-radius:8px;margin:8px 0;line-height:1.5}
   .msg-info{background:#EEF2FF;color:#4338CA}
   .msg-error{background:#FEF2F2;color:#DC2626}
   .msg-ok{background:#F0FDF4;color:#16A34A}
+  .msg-warn{background:#FFFBEB;color:#92400E}
   .result{border-radius:12px;padding:16px;margin-top:12px;border:1px solid transparent}
   .g1{background:#F0FDF4;border-color:#86EFAC}.g2{background:#EFF6FF;border-color:#93C5FD}
   .g3{background:#FFFBEB;border-color:#FCD34D}.g4{background:#FFF1F2;border-color:#FCA5A5}
@@ -59,6 +60,9 @@
   .ex-btn:hover{background:#e4e4e4}
   #reader{width:100%;border-radius:10px;overflow:hidden;margin-bottom:8px;display:none}
   #reader video{border-radius:10px}
+  .lang-tag{display:inline-block;font-size:11px;padding:2px 7px;border-radius:4px;margin-left:6px;font-weight:600}
+  .lang-de{background:#D1FAE5;color:#065F46}
+  .lang-other{background:#FEF3C7;color:#92400E}
 </style>
 </head>
 <body>
@@ -86,7 +90,7 @@
     <div style="margin-top:10px">
       <div id="reader"></div>
       <button class="btn btn-cam" id="cam-btn" onclick="toggleCamera()">Kamera starten</button>
-      <div id="lookup-msg"></div>
+      <div id="cam-msg"></div>
       <div class="divider">oder Barcode eingeben</div>
       <input type="text" id="barcode" placeholder="EAN-Barcode (z.B. 4001686011256)" style="margin-bottom:8px">
       <button class="btn btn-secondary" onclick="lookupBarcode()">In Open Food Facts suchen</button>
@@ -95,7 +99,10 @@
   </div>
 
   <div class="card">
-    <div class="card-title" style="cursor:default">Zutatenliste</div>
+    <div class="card-title" style="cursor:default">
+      Zutatenliste
+      <span id="lang-tag"></span>
+    </div>
     <div style="margin-top:10px">
       <input type="text" id="product-name" placeholder="Produktname (optional)" style="margin-bottom:8px">
       <textarea id="ingredients" rows="5" placeholder="Zutaten hier eingeben oder aus Open Food Facts übernehmen ..."></textarea>
@@ -126,13 +133,12 @@ function loadEx(k){
   document.getElementById('product-name').value=examples[k].name;
   document.getElementById('ingredients').value=examples[k].ing;
   document.getElementById('result-area').innerHTML='';
+  document.getElementById('lang-tag').innerHTML='';
 }
 
 function toggleApi(){
-  const panel=document.getElementById('api-panel');
-  const icon=document.getElementById('api-icon');
-  panel.classList.toggle('open');
-  icon.classList.toggle('open');
+  document.getElementById('api-panel').classList.toggle('open');
+  document.getElementById('api-icon').classList.toggle('open');
 }
 
 function saveKey(){
@@ -160,10 +166,7 @@ window.onload=()=>{
 };
 
 async function toggleCamera(){
-  if(scanning){
-    await stopCamera();
-    return;
-  }
+  if(scanning){await stopCamera();return}
   const btn=document.getElementById('cam-btn');
   btn.textContent='Wird gestartet...';btn.disabled=true;
   try{
@@ -171,11 +174,11 @@ async function toggleCamera(){
     scanner=new Html5Qrcode('reader');
     await scanner.start(
       {facingMode:'environment'},
-      {fps:10, qrbox:{width:250,height:100}},
+      {fps:10,qrbox:{width:250,height:100}},
       async(code)=>{
         await stopCamera();
         document.getElementById('barcode').value=code;
-        showMsg('lookup-msg','Barcode erkannt: '+code+' — suche Produkt...','info');
+        showMsg('cam-msg','Barcode erkannt: '+code+' — suche Produkt...','info');
         await lookupBarcode();
       },
       ()=>{}
@@ -185,19 +188,60 @@ async function toggleCamera(){
   }catch(e){
     document.getElementById('reader').style.display='none';
     btn.textContent='Kamera starten';btn.disabled=false;
-    showMsg('lookup-msg','Kamera nicht verfügbar. Bitte Barcode manuell eingeben.','error');
+    showMsg('cam-msg','Kamera nicht verfügbar. Bitte Barcode manuell eingeben.','error');
   }
 }
 
 async function stopCamera(){
-  if(scanner){
-    try{await scanner.stop();}catch(e){}
-    scanner=null;
-  }
+  if(scanner){try{await scanner.stop();}catch(e){} scanner=null;}
   scanning=false;
   document.getElementById('reader').style.display='none';
   const btn=document.getElementById('cam-btn');
   btn.textContent='Kamera starten';btn.classList.remove('active');btn.disabled=false;
+}
+
+function extractIngredients(p){
+  // Priorität: Deutsch → Englisch → beliebige andere Sprache
+  const langMap={
+    'de': p.ingredients_text_de,
+    'en': p.ingredients_text_en,
+    'fr': p.ingredients_text_fr,
+    'es': p.ingredients_text_es,
+    'nl': p.ingredients_text_nl,
+  };
+  // Versuche erst Deutsch
+  if(p.ingredients_text_de && p.ingredients_text_de.trim().length > 10){
+    return {text: p.ingredients_text_de, lang:'de'};
+  }
+  // Dann generisches ingredients_text falls es deutsch aussieht
+  if(p.ingredients_text && p.ingredients_text.trim().length > 10){
+    const isLikelyGerman=/Zucker|Wasser|Salz|Mehl|Milch|Fett|Öl|Aroma|Stärke/i.test(p.ingredients_text);
+    if(isLikelyGerman) return {text: p.ingredients_text, lang:'de'};
+  }
+  // Dann Englisch
+  if(p.ingredients_text_en && p.ingredients_text_en.trim().length > 10){
+    return {text: p.ingredients_text_en, lang:'en'};
+  }
+  // Dann irgendetwas
+  for(const [lang, text] of Object.entries(langMap)){
+    if(text && text.trim().length > 10) return {text, lang};
+  }
+  if(p.ingredients_text && p.ingredients_text.trim().length > 10){
+    return {text: p.ingredients_text, lang:'?'};
+  }
+  return null;
+}
+
+function cleanIngredients(text){
+  // Entferne mehrsprachige Blöcke — typisch bei Haribo etc.
+  // Viele Packungen haben "DE: ... / IT: ... / FR: ..."
+  const deMatch = text.match(/(?:^|[\n/])\s*(?:DE|Deutsch|Zutaten)\s*[:/]\s*([^/\n]+)/i);
+  if(deMatch) return deMatch[1].trim();
+  // Schneide nach erstem Schrägstrich wenn sehr lang (mehrsprachig)
+  if(text.length > 500 && text.includes(' / ')){
+    return text.split(' / ')[0].trim();
+  }
+  return text.trim();
 }
 
 async function lookupBarcode(){
@@ -205,19 +249,31 @@ async function lookupBarcode(){
   if(!code){showMsg('barcode-msg','Bitte Barcode eingeben','error');return}
   showMsg('barcode-msg','Suche in Open Food Facts...','info');
   try{
-    const res=await fetch(`https://de.openfoodfacts.org/api/v0/product/${code}.json`);
+    const res=await fetch(`https://world.openfoodfacts.org/api/v0/product/${code}.json`);
     const data=await res.json();
     if(data.status!==1){showMsg('barcode-msg','Produkt nicht gefunden. Zutaten bitte manuell eingeben.','error');return}
     const p=data.product;
     const name=p.product_name_de||p.product_name||'Unbekannt';
     const brand=p.brands?` · ${p.brands}`:'';
-    const ing=p.ingredients_text_de||p.ingredients_text||'';
+
     document.getElementById('product-name').value=name;
-    if(ing){
-      document.getElementById('ingredients').value=ing;
-      showMsg('barcode-msg',`Gefunden: ${name}${brand}. Zutatenliste übernommen.`,'ok');
+
+    const ingResult=extractIngredients(p);
+    if(ingResult){
+      const cleaned=cleanIngredients(ingResult.text);
+      document.getElementById('ingredients').value=cleaned;
+
+      if(ingResult.lang==='de'){
+        document.getElementById('lang-tag').innerHTML='<span class="lang-tag lang-de">DE</span>';
+        showMsg('barcode-msg',`Gefunden: ${name}${brand}. Deutsche Zutatenliste übernommen.`,'ok');
+      } else {
+        const langNames={'en':'Englisch','fr':'Französisch','it':'Italienisch','es':'Spanisch','?':'Unbekannte Sprache'};
+        const langName=langNames[ingResult.lang]||ingResult.lang.toUpperCase();
+        document.getElementById('lang-tag').innerHTML=`<span class="lang-tag lang-other">${ingResult.lang.toUpperCase()}</span>`;
+        showMsg('barcode-msg',`Gefunden: ${name}${brand}. Achtung: Nur ${langName}e Zutatenliste verfügbar — Analyse trotzdem möglich.`,'warn');
+      }
     } else {
-      showMsg('barcode-msg',`Gefunden: ${name}${brand} — keine Zutatenliste verfügbar.`,'error');
+      showMsg('barcode-msg',`Gefunden: ${name}${brand} — keine Zutatenliste in der Datenbank.`,'error');
     }
   }catch(e){
     showMsg('barcode-msg','Verbindungsfehler. Bitte erneut versuchen.','error');
@@ -235,13 +291,13 @@ async function analyze(){
   const fill=document.getElementById('progress');
   let p=0;const t=setInterval(()=>{p=Math.min(p+7,88);fill.style.width=p+'%'},180);
   const prompt=`Du bist ein Ernährungsexperte für NOVA-Klassifikation nach Monteiro.
-Analysiere diese Zutatenliste eines deutschen Supermarktprodukts.
+Analysiere diese Zutatenliste eines Supermarktprodukts. Die Liste kann auf Deutsch oder Englisch sein.
 Produkt: "${name}"
 Zutaten: "${ing}"
 Antworte NUR mit JSON:
 {"gruppe":1,"gruppenname":"Unverarbeitet","bewertung":"Max 2 Sätze warum diese Gruppe.","flags":[{"typ":"danger","text":"Befund"}],"empfehlung":"1 konkreter Tipp"}
 Gruppen: 1=unverarbeitet, 2=verarbeitete Zutaten, 3=verarbeitet, 4=hochverarbeitet.
-Flag-Typen: danger=UPF-Marker, warn=grenzwertig, ok=positiv. Max 4 Flags.`;
+Flag-Typen: danger=UPF-Marker, warn=grenzwertig, ok=positiv. Max 4 Flags. Antworte immer auf Deutsch.`;
   try{
     const res=await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
